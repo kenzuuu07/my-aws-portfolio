@@ -1,0 +1,88 @@
+# ==========================================================================
+# BONUS (Phase 5): deploy the site/ folder to your S3 bucket on every push.
+#
+# This file does NOTHING while it lives in bonus/. GitHub only runs workflows
+# stored in .github/workflows/. In Phase 5 you will copy it to:
+#     .github/workflows/deploy.yml
+# Full steps: instructions/05-cicd-bonus.md
+#
+# Before it can work, set these in YOUR repository
+# (Settings > Secrets and variables > Actions):
+#   Secrets   AWS_ACCESS_KEY_ID       from your CI/CD card
+#             AWS_SECRET_ACCESS_KEY   from your CI/CD card
+#   Variables S3_BUCKET               the bucket name YOU chose, e.g. my-first-cloud-portfolio
+# ==========================================================================
+name: Deploy website to S3
+
+on:
+  push:
+    branches: [main]     # every commit to main deploys
+  workflow_dispatch:     # adds a "Run workflow" button on the Actions tab
+
+permissions:
+  contents: read         # this workflow only needs to read your code
+
+concurrency:
+  group: deploy-to-s3    # never run two deploys at the same time
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-1   # Asia Pacific (Singapore) - where your bucket lives
+  SOURCE_DIR: site             # only this folder is uploaded
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check secrets and variables
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          HAS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+          HAS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY != '' }}
+        run: |
+          ok=true
+          if [ "$HAS_KEY_ID" != "true" ]; then echo "::error::Secret AWS_ACCESS_KEY_ID is missing. Add it under Settings > Secrets and variables > Actions > Secrets."; ok=false; fi
+          if [ "$HAS_SECRET" != "true" ]; then echo "::error::Secret AWS_SECRET_ACCESS_KEY is missing. Add it under Settings > Secrets and variables > Actions > Secrets."; ok=false; fi
+          if [ -z "$S3_BUCKET" ]; then
+            echo "::error::Variable S3_BUCKET is missing. Add it under Settings > Secrets and variables > Actions > Variables (not Secrets)."; ok=false
+          elif ! echo "$S3_BUCKET" | grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'; then
+            echo "::error::S3_BUCKET='$S3_BUCKET' is not a bucket name. Use only the name (no s3://, no http://, no spaces), e.g. my-first-cloud-portfolio"; ok=false
+          fi
+          $ok
+
+      - name: Check out your repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that site/index.html exists
+        run: |
+          if [ ! -f "$SOURCE_DIR/index.html" ]; then
+            echo "::error::$SOURCE_DIR/index.html not found. Your website files must be inside the '$SOURCE_DIR' folder and the page must be named index.html (lowercase)."
+            exit 1
+          fi
+          echo "Files that will be uploaded:"; find "$SOURCE_DIR" -type f | sort
+
+      - name: Configure AWS credentials (from GitHub Secrets)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload site/ to S3
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        # "aws s3 sync" uploads only new or changed files.
+        # To ALSO delete files from the bucket that you deleted from site/, add --delete
+        # to the end of the command. Careful: --delete removes anything in the bucket that
+        # is not in site/ (for example images you uploaded by hand in the Console).
+        run: aws s3 sync "$SOURCE_DIR/" "s3://$S3_BUCKET" --no-progress
+
+      - name: Print your website address
+        env:
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: |
+          url="http://$S3_BUCKET.s3-website-$AWS_REGION.amazonaws.com"
+          echo "Deployed! Open: $url"
+          echo "### ✅ Deployed to S3" >> "$GITHUB_STEP_SUMMARY"
+          echo "Website: $url (refresh with Ctrl+F5 if you still see the old version)" >> "$GITHUB_STEP_SUMMARY"
